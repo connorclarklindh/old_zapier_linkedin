@@ -1,0 +1,146 @@
+fix_qs_headers = function(bundle) {
+    bundle.request.headers['Content-Type'] = 'application/json';
+    bundle.request.params.oauth2_access_token = bundle.request.params.access_token;
+    delete bundle.request.params.access_token;
+    return bundle;
+};
+
+// return a suitable modified-since timestamp in milliseconds to filter results by
+get_since_time = function() {
+    now = Date.now();
+    len = 1000*60*60; // 1 hour
+    return now-len;
+};
+
+var Zap = {
+    connection_pre_poll: function(bundle) {
+        bundle = fix_qs_headers(bundle);
+        bundle.request.url = bundle.request.url + '&modified-since=' + get_since_time();
+        return bundle.request;
+    },
+    connection_2nd_degree_pre_poll: function(bundle) {
+        return fix_qs_headers(bundle).request;
+    },
+    connection_2nd_degree_post_poll: function(bundle) {
+        results = JSON.parse(bundle.response.content).values || [];
+        return _.map(results, function(result){
+            if (result.updateContent.person.id !== 'private' && result.updateContent.person.connections && result.updateContent.person.connections.values.length > 0) {
+                // Pull out some of the deeper details of the response
+                your_connection = result.updateContent.person;
+                new_connection = result.updateContent.person.connections.values[0];
+                
+                // Clean the 2nd degree connection of technical bits
+                delete new_connection.apiStandardProfileRequest;
+                delete new_connection.siteStandardProfileRequest;
+                
+                // Make the 2nd degree connection be top level keys
+                $.extend(result, new_connection);
+                result.person_id = new_connection.id; // Preserve the 2nd degree connection's id
+                
+                result.first_degree_connection = {
+                    first_name: your_connection.firstName,
+                    last_name: your_connection.lastName,
+                    id: your_connection.id
+                };
+                
+                delete result.updateContent; // Snagged the important bits out. Delete to avoid confusion
+                
+                // Have to generate a unique id by combining the id of the 1st and 2nd degree connections
+                result.id = your_connection.id + '-' + new_connection.id;
+                return result;
+            }
+            else {
+                return {};
+            }
+        });
+    },
+    job_pre_poll: function(bundle) {
+        url = 'https://api.linkedin.com/v1/job-search:(jobs:(id,customer-job-code,active,posting-date,expiration-date,posting-timestamp,expiration-timestamp,company:(id,name),position:(title,location,job-functions,industries,job-type,experience-level),skills-and-experience,description-snippet,description,salary,job-poster:(id,first-name,last-name,headline),referral-bonus,site-job-url,location-description))?format=json';
+        bundle = fix_qs_headers(bundle);
+        bundle.request.url = url;
+        return bundle.request;
+    },
+    job_post_poll: function(bundle) {
+        data = JSON.parse(bundle.response.content);
+        if (bundle.response.status_code >= 400) {
+            throw new ErrorException(data.message);
+        }
+        return _.map(data.jobs.values, function(job) {
+            return _.object(_.map(job, function(value, key) {
+                if (typeof value == 'string') {
+                    value = value.replace(/<(?:.|\n)*?>/gm, ' ');
+                }
+                return [key, value];
+            }));
+        });
+    },
+    status_update_pre_poll: function(bundle) {
+        return fix_qs_headers(bundle).request;
+    },
+    status_update_post_poll: function(bundle) {
+        results = JSON.parse(bundle.response.content).values || [];
+        return _.map(results, function(result){
+            if (result.updateKey) {
+                result.id = result.updateKey;
+            }
+            return result;
+        });
+    },
+    share_pre_write: function(bundle) {
+        return fix_qs_headers(bundle).request;
+    },
+    
+ 
+   sendInvite_pre_write: function(bundle) {
+    
+        outbound = JSON.parse(bundle.request.data);
+        //console.log(outbound);
+        
+        personFields = outbound.recipients.values;
+        bundle.request.headers["x-li-format"] = "json";
+        
+        //console.log(personFields);
+        
+        newFields = [{
+            "person": {
+                "firstName": personFields.firstName,
+                "lastName": personFields.lastName,
+                "_path": "/people/email=" + personFields._path
+            }
+        }];
+        
+        //console.log(newFields);
+        
+        outbound.recipients.values = newFields;
+        
+        bundle.request.data = JSON.stringify(outbound);
+       
+        //console.log(bundle.request.data);
+        
+        return bundle.request;
+        
+    },
+
+      sendMessage_pre_write: function(bundle) {
+        
+        bundle.request.headers["x-li-format"] = "json";
+        outbound = JSON.parse(bundle.request.data);
+         
+        personField = outbound.recipients.values;
+         
+        newField = [{
+            "person": {
+               "_path": "/people/" + personField._path
+            }
+        }];
+         
+        outbound.recipients.values = newField;
+        
+        bundle.request.data = JSON.stringify(outbound);
+        
+        return bundle.request;
+        
+    }
+    
+    
+};
